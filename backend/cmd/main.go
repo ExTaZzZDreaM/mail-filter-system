@@ -11,6 +11,7 @@ import (
 	"mail_server/internal/handler/mailHandler"
 	"mail_server/internal/repo"
 	"mail_server/internal/service"
+	"mail_server/internal/service/mailService/validator"
 	"net/http"
 	"os"
 	"os/signal"
@@ -38,6 +39,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
+	validator.AuthServID = mailDomain
 
 	r := repo.NewRepo(db)
 	s := service.NewService(r)

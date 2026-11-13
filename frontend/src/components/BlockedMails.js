@@ -27,6 +27,7 @@ const BlockedMails = ({ token }) => {
           to: mail.to || 'Unknown',
           date: mail.date ? new Date(mail.date).toLocaleString() : 'Unknown',
           attachments: mail.attachments || [],
+          authResults: mail.authResults || '',
         })))
         
 
@@ -118,6 +119,7 @@ const BlockedMails = ({ token }) => {
                     <th className="py-2 px-4 border-b text-left">To</th>
                     <th className="py-2 px-4 border-b text-left">Date</th>
                     <th className="py-2 px-4 border-b text-left">Attachments</th>
+                    <th className="py-2 px-4 border-b text-left">Authentication</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -146,6 +148,9 @@ const BlockedMails = ({ token }) => {
                         ) : (
                           'None'
                         )}
+                      </td>
+                      <td className="py-2 px-4 border-b">
+                        <small className="text-muted">{mail.authResults || '—'}</small>
                       </td>
                     </tr>
                   ))}

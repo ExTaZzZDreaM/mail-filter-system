@@ -46,6 +46,8 @@ func NewSMTPServer(s *mailService.MailService, tc *tls.Config, addr, domain, mai
 
 			mm := models.Mail{
 				RawMessage:      data,
+				MailFrom:        from,
+				Helo:            extractHELO(data),
 				Subject:         m.Subject,
 				Date:            m.Date,
 				MessageID:       m.MessageID,
@@ -68,6 +70,7 @@ func NewSMTPServer(s *mailService.MailService, tc *tls.Config, addr, domain, mai
 			}
 			for _, i := range m.From {
 				mm.From = i.String()
+				mm.FromAddress = i.Address
 				break
 			}
 			for _, i := range m.ResentTo {
@@ -166,6 +169,18 @@ func (s *SMTPServer) ListenAndServe() error {
 
 func (s *SMTPServer) Shutdown(ctx context.Context) error {
 	return s.server.Shutdown(ctx)
+}
+
+// extractHELO reads the HELO/EHLO name from the Received header that smtpd
+// prepends to every message: "Received: from <helo> (<host> [<ip>])".
+func extractHELO(data []byte) string {
+	line, _, _ := bytes.Cut(data, []byte{13, 10}) // CRLF
+	rest, ok := bytes.CutPrefix(line, []byte("Received: from "))
+	if !ok {
+		return ""
+	}
+	helo, _, _ := bytes.Cut(rest, []byte(" "))
+	return string(helo)
 }
 
 func getSenderIP(addr net.Addr) (string, error) {

@@ -11,12 +11,26 @@
 - **Цепочка проверок** (`backend/internal/service/mailService/validator`):
   | Проверка | Что делает |
   |---|---|
-  | SPF | Проверяет, может ли IP отправителя слать почту от имени домена (`ip4`, `ip6`, `a`, `mx`, `include`, `all`) |
-  | DKIM | Проверяет подпись `DKIM-Signature` (только `rsa-sha256`) |
-  | DMARC | Блокирует письмо, если у домена политика `p=reject`, а SPF или DKIM не прошли |
+  | SPF | RFC 7208 через [`blitiri.com.ar/go/spf`]: проверяется отправитель из SMTP-конверта (`MAIL FROM`), для пустого — HELO; лимит 10 DNS-запросов |
+  | DKIM | RFC 6376 через [`go-msgauth/dkim`]: все подписи (до 5), `simple`/`relaxed`, RSA и Ed25519 |
+  | DMARC | RFC 7489 через [`go-msgauth/dmarc`]: выравнивание доменов SPF/DKIM с `From` (`aspf`/`adkim`), политики `p=`, `sp=`, `pct=` |
   | AbuseIPDB | Блокирует IP с abuse-score > 50 |
   | VirusTotal | Загружает вложения на проверку и блокирует письмо при срабатывании хотя бы одного движка |
-- **Карантин**: письма, не прошедшие проверку, группируются по причине блокировки и доступны администратору.
+- **Карантин**: письма, не прошедшие проверку, группируются по причине блокировки и доступны администратору вместе со строкой `Authentication-Results` (итоги SPF/DKIM/DMARC).
+
+### Когда письмо уходит в карантин
+
+| Ситуация | Решение |
+|---|---|
+| DMARC не прошёл, `p=reject` | карантин («DMARC failed (policy reject)») |
+| DMARC не прошёл, `p=quarantine` | карантин («DMARC failed (policy quarantine)») |
+| DMARC не прошёл, `p=none` | принимается (только мониторинг) |
+| DMARC прошёл | принимается, даже если SPF `fail` (например, пересылка с сохранённой DKIM-подписью) |
+| DMARC-записи нет, SPF `fail` | карантин («SPF failed»), либо принимается при `SPF_FAIL_ACTION=accept` |
+| SPF `softfail` / `neutral` / `none`, нет DKIM-подписи | принимается |
+| Временные ошибки DNS (`temperror`) | принимается, результат пишется в `Authentication-Results` |
+
+Письма с адресов из `TRUSTED_NETWORKS` не проходят SPF/DKIM/DMARC и AbuseIPDB (антивирусная проверка вложений выполняется всегда).
 - **HTTP API** (порт `8080`) и **React-клиент**: регистрация, вход, просмотр почты; для администратора — карантин и активация новых пользователей.
 
 ## Архитектура
@@ -78,6 +92,8 @@ docker run -d --name mail-db -p 5432:5432 mail-db
 | `CORS_ORIGIN` | `http://localhost:3000` | Origin фронтенда, которому разрешён доступ к API |
 | `ABUSEIPDB_API_KEY` | — | Ключ [AbuseIPDB](https://www.abuseipdb.com/); без него проверка IP пропускается |
 | `VIRUSTOTAL_API_KEY` | — | Ключ [VirusTotal](https://www.virustotal.com/); без него проверка вложений пропускается |
+| `SPF_FAIL_ACTION` | `quarantine` | Что делать с SPF `fail`, если у домена нет DMARC: `quarantine` или `accept` |
+| `TRUSTED_NETWORKS` | — | CIDR через запятую, для которых пропускаются проверки отправителя. Для локальной отладки: `127.0.0.0/8,::1/128` |
 
 ### 3. Backend
 
@@ -116,7 +132,7 @@ npm start
 
 ### 5. Отправка тестового письма
 
-`backend/check/main.go` отправляет письмо на `john.doe@test.com` с вложением `./kk.exe` (файл нужно положить рядом):
+`backend/check/main.go` отправляет письмо на `john.doe@test.com` с вложением `./kk.exe` (файл нужно положить рядом). Письмо идёт от `test@gmail.com` с `127.0.0.1`, поэтому без `TRUSTED_NETWORKS=127.0.0.0/8,::1/128` оно законно не пройдёт DMARC gmail.com и окажется в карантине.
 
 ```bash
 cd backend/check
@@ -147,8 +163,7 @@ go run .
 - Ключи API и ACME-ключ убраны из кода и из индекса git, но **остаются в истории коммитов** — их нужно перевыпустить.
 
 **Корректность**
-- SPF проверяется для фиксированного адреса `asd@yandex.kz`, а не для реального отправителя; механизм `all` перехватывается веткой `a`.
-- Реализация DKIM неполная (не проверяется `bh=`, неверно разбирается `c=relaxed/relaxed`), поэтому корректно подписанные письма могут блокироваться.
+- Проверки SPF/DKIM/DMARC выполняются уже после приёма письма, поэтому отправитель не получает отказ `550`/`451` — письмо просто попадает в карантин.
 - Письмо доставляется по заголовку `To`, а не по SMTP-конверту: получатели из `Cc`/`Bcc` письмо не получают, а при нескольких получателях всё попадает в ящик первого.
 - Письма хранятся только в памяти и пропадают при перезапуске.
 
@@ -157,3 +172,6 @@ go run .
 Не указана.
 
 [`mhale/smtpd`]: https://github.com/mhale/smtpd
+[`blitiri.com.ar/go/spf`]: https://pkg.go.dev/blitiri.com.ar/go/spf
+[`go-msgauth/dkim`]: https://pkg.go.dev/github.com/emersion/go-msgauth/dkim
+[`go-msgauth/dmarc`]: https://pkg.go.dev/github.com/emersion/go-msgauth/dmarc
