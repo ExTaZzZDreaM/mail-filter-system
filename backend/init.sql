@@ -1,3 +1,5 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 CREATE TABLE staff (
                        id SERIAL PRIMARY KEY,
                        first_name VARCHAR(50) NOT NULL,
@@ -14,6 +16,6 @@ CREATE TABLE staff (
 
 INSERT INTO staff (first_name, last_name, email, login, password, is_admin, status)
 VALUES
-    ('John', 'Doe', 'john.doe@test.com', 'jdoe', 'password123', TRUE, 'Active'),
-    ('Jane', 'Smith', 'jane.smith@test.com', 'jsmith', 'securepass456', FALSE, 'Active'),
-    ('Mike', 'Johnson', 'mike.johnson@test.com', 'mjohnson', 'mypassword789', FALSE, 'Inactive');
+    ('John', 'Doe', 'john.doe@test.com', 'jdoe', crypt('password123', gen_salt('bf', 10)), TRUE, 'Active'),
+    ('Jane', 'Smith', 'jane.smith@test.com', 'jsmith', crypt('securepass456', gen_salt('bf', 10)), FALSE, 'Active'),
+    ('Mike', 'Johnson', 'mike.johnson@test.com', 'mjohnson', crypt('mypassword789', gen_salt('bf', 10)), FALSE, 'Inactive');

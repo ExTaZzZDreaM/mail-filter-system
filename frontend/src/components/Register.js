@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 
 const Register = () => {
@@ -31,7 +31,11 @@ const Register = () => {
     try {
       const response = await axios.post('http://localhost:8080/register', formData);
       if (response.status === 201) {
-        navigate('/login');
+        navigate('/login', {
+          state: {
+            message: `Registration successful. Your username is "${response.data.username}". You can log in after an administrator activates your account.`,
+          },
+        });
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Registration failed');
@@ -82,7 +86,7 @@ const Register = () => {
         <button type="submit" className="btn btn-primary">Register</button>
       </form>
       <p className="mt-3">
-        Already have an account? <a href="/login">Login here</a>
+        Already have an account? <Link to="/login">Login here</Link>
       </p>
     </div>
   );

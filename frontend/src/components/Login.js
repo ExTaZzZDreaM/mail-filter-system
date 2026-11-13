@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import axios from 'axios';
 
 const Login = ({ onLogin }) => {
@@ -7,6 +8,8 @@ const Login = ({ onLogin }) => {
     password: ''
   });
   const [error, setError] = useState('');
+  const location = useLocation();
+  const info = location.state?.message;
 
   const handleChange = (e) => {
     setFormData({
@@ -25,13 +28,14 @@ const Login = ({ onLogin }) => {
         onLogin(response.data.token);
       }
     } catch (err) {
-      setError('Invalid credentials');
+      setError(err.response?.data?.message || 'Invalid credentials');
     }
   };
 
   return (
     <div className="auth-form">
       <h2>Login</h2>
+      {info && !error && <div className="alert alert-success">{info}</div>}
       {error && <div className="alert alert-danger">{error}</div>}
       <form onSubmit={handleSubmit}>
         <div className="mb-3">
@@ -61,7 +65,7 @@ const Login = ({ onLogin }) => {
         <button type="submit" className="btn btn-primary">Login</button>
       </form>
       <p className="mt-3">
-        Don't have an account? <a href="/register">Register here</a>
+        Don't have an account? <Link to="/register">Register here</Link>
       </p>
     </div>
   );

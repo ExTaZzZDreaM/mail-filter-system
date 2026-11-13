@@ -8,7 +8,6 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/mail"
-	"os"
 	"strings"
 	"time"
 )
@@ -27,9 +26,6 @@ func Parse(r io.Reader) (email Email, err error) {
 	if err != nil {
 		fmt.Printf("Error reading raw email: %v\n", err)
 		return email, err
-	}
-	if err := os.WriteFile("/tmp/raw_email.txt", rawData, 0644); err != nil {
-		fmt.Printf("Error saving raw email: %v\n", err)
 	}
 	r = bytes.NewReader(rawData)
 

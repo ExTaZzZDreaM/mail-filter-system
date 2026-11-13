@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"mail_server/internal/service"
+	"mail_server/internal/service/backendService"
 	"mail_server/models"
 	"net"
 	"net/http"
@@ -18,7 +20,7 @@ type BackendHandler struct {
 	service *service.Service
 }
 
-func NewBackendHandler(service *service.Service, addr string, tc *tls.Config) *BackendHandler {
+func NewBackendHandler(service *service.Service, addr string, tc *tls.Config, allowedOrigin string) *BackendHandler {
 	srv := &http.Server{
 		Addr:      addr,
 		TLSConfig: tc,
@@ -34,16 +36,17 @@ func NewBackendHandler(service *service.Service, addr string, tc *tls.Config) *B
 	mux.HandleFunc("/mails", bh.handleGetMails)
 	mux.HandleFunc("/is_admin", bh.handleIsAdmin)
 	mux.HandleFunc("/blocked-mails", bh.handleBlockedMails)
-	mux.HandleFunc("/inactive", bh.handlerGetInactive)
-	mux.HandleFunc("/update-status", bh.handlerUpdataStatusUser)
+	mux.HandleFunc("/inactive", bh.handleGetInactive)
+	mux.HandleFunc("/update-status", bh.handleUpdateUserStatus)
 
-	bh.server.Handler = corsMiddleware(mux)
+	bh.server.Handler = corsMiddleware(allowedOrigin, mux)
 	return bh
 }
 
-func corsMiddleware(next http.Handler) http.Handler {
+func corsMiddleware(allowedOrigin string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+		w.Header().Set("Vary", "Origin")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Max-Age", "86400")
@@ -57,211 +60,190 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("encode response: %v", err)
+	}
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"message": msg})
+}
+
+// bearerToken extracts the token from "Authorization: Bearer <token>".
+func bearerToken(r *http.Request) (string, error) {
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		return "", errors.New("authorization header required")
+	}
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || parts[0] != "Bearer" || parts[1] == "" {
+		return "", errors.New("invalid Authorization header format")
+	}
+	return parts[1], nil
+}
+
+// requireMethod writes 405 and returns false if the request uses another method.
+func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method != method {
+		writeError(w, http.StatusMethodNotAllowed, "Method not allowed")
+		return false
+	}
+	return true
+}
+
+// requireAdmin writes an error response and returns false if the caller is not an admin.
+func (bh *BackendHandler) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	token, err := bearerToken(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return false
+	}
+	if err := bh.service.IsAdmin(token); err != nil {
+		if errors.Is(err, backendService.ErrForbidden) {
+			writeError(w, http.StatusForbidden, "Forbidden")
+		} else {
+			writeError(w, http.StatusUnauthorized, "Unauthorized")
+		}
+		return false
+	}
+	return true
+}
+
 func (bh *BackendHandler) handleRegister(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
 
 	var user models.User
 	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	if err := bh.service.Register(user); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	login, err := bh.service.Register(user)
+	if err != nil {
+		switch {
+		case errors.Is(err, backendService.ErrUserExists):
+			writeError(w, http.StatusConflict, "User with this name already exists")
+		case errors.Is(err, models.ErrValidation):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			log.Printf("register: %v", err)
+			writeError(w, http.StatusInternalServerError, "Registration failed")
+		}
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]string{"message": "User registered successfully"})
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"message":  "User registered successfully, waiting for administrator approval",
+		"username": login,
+	})
 }
 
 func (bh *BackendHandler) handleAuth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodPost) {
 		return
 	}
 
 	var user models.User
 	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
 	token, err := bh.service.Auth(user)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Authentication failed: %s", err.Error()), http.StatusUnauthorized)
+		if errors.Is(err, backendService.ErrInactiveUser) {
+			writeError(w, http.StatusForbidden, "Account is not activated yet")
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"token": token})
+	writeJSON(w, http.StatusOK, map[string]string{"token": token})
 }
 
 func (bh *BackendHandler) handleGetMails(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) {
 		return
 	}
 
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+	token, err := bearerToken(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
 		return
 	}
-
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
-		return
-	}
-	token := parts[1]
 
 	mails, err := bh.service.GetMail(token)
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
+	if mails == nil {
+		mails = []models.Mail{}
+	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(mails)
+	writeJSON(w, http.StatusOK, mails)
 }
 
 func (bh *BackendHandler) handleIsAdmin(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	if !requireMethod(w, r, http.MethodGet) || !bh.requireAdmin(w, r) {
 		return
 	}
-
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
-		return
-	}
-
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
-		return
-	}
-	token := parts[1]
-
-	err := bh.service.IsAdmin(token)
-	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	w.WriteHeader(http.StatusOK)
 }
 
 func (bh *BackendHandler) handleBlockedMails(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+	if !requireMethod(w, r, http.MethodGet) || !bh.requireAdmin(w, r) {
 		return
 	}
 
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
-		return
-	}
-
-	token := parts[1]
-
-	err := bh.service.IsAdmin(token)
-	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	blMails := bh.service.GetBlockedMails()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(blMails)
+	writeJSON(w, http.StatusOK, bh.service.GetBlockedMails())
 }
 
-func (bh *BackendHandler) handlerGetInactive(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+func (bh *BackendHandler) handleGetInactive(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodGet) || !bh.requireAdmin(w, r) {
 		return
 	}
 
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
-		return
-	}
-
-	token := parts[1]
-
-	err := bh.service.IsAdmin(token)
+	users, err := bh.service.GetInactive()
 	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		log.Printf("get inactive users: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to load users")
 		return
 	}
-
-	blUsers, err := bh.service.GetInactive()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if users == nil {
+		users = []models.User{}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-
-	fmt.Println(blUsers)
-
-	json.NewEncoder(w).Encode(blUsers)
+	writeJSON(w, http.StatusOK, users)
 }
 
-func (bh *BackendHandler) handlerUpdataStatusUser(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+func (bh *BackendHandler) handleUpdateUserStatus(w http.ResponseWriter, r *http.Request) {
+	if !requireMethod(w, r, http.MethodPost) || !bh.requireAdmin(w, r) {
+		return
 	}
 
-	type req struct {
+	var body struct {
 		Username string `json:"username"`
 	}
-
-	var asd req
-
-	if err := json.NewDecoder(r.Body).Decode(&asd); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-	}
-
-	authHeader := r.Header.Get("Authorization")
-	if authHeader == "" {
-		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Username == "" {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 
-	parts := strings.Split(authHeader, " ")
-	if len(parts) != 2 || parts[0] != "Bearer" {
-		http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
+	if err := bh.service.UpdateStatus(body.Username); err != nil {
+		if errors.Is(err, backendService.ErrUserNotFound) {
+			writeError(w, http.StatusNotFound, "User not found")
+			return
+		}
+		log.Printf("update status: %v", err)
+		writeError(w, http.StatusInternalServerError, "Failed to update status")
 		return
-	}
-
-	token := parts[1]
-
-	err := bh.service.IsAdmin(token)
-	if err != nil {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
-	err = bh.service.UpdateStatus(asd.Username)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
 	w.WriteHeader(http.StatusOK)

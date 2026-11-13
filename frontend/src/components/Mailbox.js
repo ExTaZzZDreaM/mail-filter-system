@@ -37,11 +37,11 @@ const Mailbox = ({ token }) => {
         <p>No emails found</p>
       ) : (
         <div className="list-group">
-          {mails.map((mail) => (
-            <div key={mail.id} className="list-group-item">
+          {mails.map((mail, index) => (
+            <div key={mail.messageID || index} className="list-group-item">
               <h5>{mail.subject}</h5>
               <p>From: {mail.from}</p>
-              <p>{mail.textBody.substring(0, 100)}...</p>
+              <p>{(mail.textBody || '').substring(0, 100)}...</p>
               <small className="text-muted">{new Date(mail.date).toLocaleString()}</small>
             </div>
           ))}

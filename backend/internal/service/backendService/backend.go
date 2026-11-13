@@ -1,103 +1,124 @@
 package backendService
 
 import (
+	"errors"
 	"fmt"
 	"mail_server/internal/repo"
+	userstorage "mail_server/internal/repo/userStorage"
 	"mail_server/models"
 
-	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
+const mailDomain = "test.com"
+
+var (
+	ErrInvalidCredentials = errors.New("invalid username or password")
+	ErrInactiveUser       = errors.New("user is inactive")
+	ErrUnauthorized       = errors.New("unauthorized")
+	ErrForbidden          = errors.New("user is not admin")
+	ErrUserExists         = userstorage.ErrUserExists
+	ErrUserNotFound       = userstorage.ErrUserNotFound
+)
+
+// dummyHash is compared against when the user does not exist, to equalize timing.
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("dummy-password"), bcrypt.DefaultCost)
+
 type BackendService struct {
-	r     *repo.Repo
-	token map[string]string
+	r      *repo.Repo
+	tokens *tokenStore
 }
 
 func NewBackendService(r *repo.Repo) *BackendService {
 	return &BackendService{
-		r:     r,
-		token: make(map[string]string),
+		r:      r,
+		tokens: newTokenStore(),
 	}
 }
 
-func (b *BackendService) Register(u models.User) error {
+// Register creates an inactive user and returns the generated login.
+func (b *BackendService) Register(u models.User) (string, error) {
 	if err := u.Validate(); err != nil {
-		return err
+		return "", err
 	}
 
 	u.Login = u.FirstName + u.LastName
+	u.Email = u.Login + "@" + mailDomain
 
-	u.Email = u.Login + "@test.com"
+	hash, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("hash password: %w", err)
+	}
+	u.Password = string(hash)
 
 	if err := b.r.UserStorage.AddUser(u); err != nil {
-		return fmt.Errorf("failed to add user: %w", err)
+		return "", err
 	}
 
-	return nil
+	return u.Login, nil
 }
 
 func (b *BackendService) Auth(u models.User) (string, error) {
 	user, ex := b.r.UserStorage.GetUser(u.Login)
-
 	if !ex {
-		return "", fmt.Errorf("user not found")
+		// Compare against a dummy hash so response time does not reveal whether the user exists.
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(u.Password))
+		return "", ErrInvalidCredentials
 	}
 
-	if user.Password != u.Password {
-		return "", fmt.Errorf("wrong password")
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(u.Password)); err != nil {
+		return "", ErrInvalidCredentials
 	}
 
 	if user.Status != "Active" {
-		return "", fmt.Errorf("user is inactive")
+		return "", ErrInactiveUser
 	}
 
-	token := uuid.New().String()
+	return b.tokens.issue(user.Login), nil
+}
 
-	b.token[token] = u.Login
-
-	return token, nil
+func (b *BackendService) userByToken(token string) (models.User, error) {
+	login, ok := b.tokens.lookup(token)
+	if !ok {
+		return models.User{}, ErrUnauthorized
+	}
+	user, ex := b.r.UserStorage.GetUser(login)
+	if !ex {
+		return models.User{}, ErrUnauthorized
+	}
+	return user, nil
 }
 
 func (b *BackendService) GetMail(token string) ([]models.Mail, error) {
-	username, ex := b.token[token]
-
-	if !ex {
-		return nil, fmt.Errorf("user not found")
-	}
-
-	user, ex := b.r.UserStorage.GetUser(username)
-
-	if !ex {
-		return nil, fmt.Errorf("user not found")
+	user, err := b.userByToken(token)
+	if err != nil {
+		return nil, err
 	}
 
 	mails, _ := b.r.MailStorage.GetMailByRecipient(user.Email)
-
 	return mails, nil
 }
 
 func (b *BackendService) IsAdmin(token string) error {
-	username, ex := b.token[token]
-
-	if !ex {
-		return fmt.Errorf("user not found")
+	user, err := b.userByToken(token)
+	if err != nil {
+		return err
 	}
-
-	user, ex := b.r.UserStorage.GetUser(username)
-
-	if !ex {
-		return fmt.Errorf("user not found")
-	}
-
 	if !user.IsAdmin {
-		return fmt.Errorf("user is not admin")
+		return ErrForbidden
 	}
-
 	return nil
 }
 
 func (b *BackendService) GetInactive() ([]models.User, error) {
-	return b.r.GetInactiveUsers()
+	users, err := b.r.GetInactiveUsers()
+	if err != nil {
+		return nil, err
+	}
+	for i := range users {
+		users[i].Password = "" // never expose password hashes
+	}
+	return users, nil
 }
 
 func (b *BackendService) UpdateStatus(login string) error {

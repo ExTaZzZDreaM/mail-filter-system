@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mail_server/models"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -31,6 +33,13 @@ type VirusTotalAnalysisResponse struct {
 }
 
 func scanFiles(mail *models.Mail) error {
+	if os.Getenv("VIRUSTOTAL_API_KEY") == "" {
+		if len(mail.Attachments) > 0 || len(mail.EmbeddedFiles) > 0 {
+			log.Println("VIRUSTOTAL_API_KEY is not set, skipping attachment scan")
+		}
+		return nil
+	}
+
 	for i, attachment := range mail.Attachments {
 		if len(attachment.Data) == 0 {
 			fmt.Println("Attachment data is empty, skipping scan")
@@ -98,7 +107,7 @@ func uploadFileToVirusTotal(data []byte, name string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("x-apikey", "54e468d2dd6f5824e24d67159f09461a4e62af03c5d7b71bf47f6d30cce2db84")
+	req.Header.Set("x-apikey", os.Getenv("VIRUSTOTAL_API_KEY"))
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Accept", "application/json")
 
@@ -135,7 +144,7 @@ func pollAnalysisResults(analysisID string) (*VirusTotalAnalysisResponse, error)
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
-		req.Header.Set("x-apikey", "54e468d2dd6f5824e24d67159f09461a4e62af03c5d7b71bf47f6d30cce2db84")
+		req.Header.Set("x-apikey", os.Getenv("VIRUSTOTAL_API_KEY"))
 		req.Header.Set("Accept", "application/json")
 
 		client := &http.Client{

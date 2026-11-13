@@ -3,9 +3,11 @@ package validator
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 )
 
@@ -17,6 +19,12 @@ type AbuseIPDBResponse struct {
 }
 
 func checkAbuseIP(ip string) error {
+	apiKey := os.Getenv("ABUSEIPDB_API_KEY")
+	if apiKey == "" {
+		log.Println("ABUSEIPDB_API_KEY is not set, skipping AbuseIPDB check")
+		return nil
+	}
+
 	if net.ParseIP(ip) == nil {
 		return fmt.Errorf("invalid IP address: %s", ip)
 	}
@@ -32,7 +40,7 @@ func checkAbuseIP(ip string) error {
 		return fmt.Errorf("create request: %w", err)
 	}
 
-	req.Header.Set("Key", "22d4ed0dc2fc54aaa49f39379668022a31947ff90a96e327190e5a42e96dfbb92b1a2f359f37defa")
+	req.Header.Set("Key", apiKey)
 	req.Header.Set("Accept", "application/json")
 
 	client := &http.Client{

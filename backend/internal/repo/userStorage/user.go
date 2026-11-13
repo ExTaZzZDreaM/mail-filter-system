@@ -1,24 +1,25 @@
 package userstorage
 
 import (
+	"errors"
 	"fmt"
 	"mail_server/models"
-	"sync"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
+)
+
+var (
+	ErrUserExists   = errors.New("user already exists")
+	ErrUserNotFound = errors.New("user not found")
 )
 
 type UserStorage struct {
-	db      *sqlx.DB
-	rwMutex *sync.RWMutex
+	db *sqlx.DB
 }
 
 func NewUserStorage(db *sqlx.DB) *UserStorage {
-	return &UserStorage{
-		db:      db,
-		rwMutex: &sync.RWMutex{},
-	}
+	return &UserStorage{db: db}
 }
 
 func (u *UserStorage) GetUserByMail(email string) (models.User, bool) {
@@ -71,8 +72,12 @@ func (u *UserStorage) AddUser(s models.User) error {
 		VALUES ($1, $2, $3, $4, $5, $6, $7);
 	`
 
-	err := u.db.QueryRow(query, s.FirstName, s.LastName, s.Email, s.Login, s.Password, false, "Inactive")
+	_, err := u.db.Exec(query, s.FirstName, s.LastName, s.Email, s.Login, s.Password, false, "Inactive")
 	if err != nil {
+		var pqErr *pq.Error
+		if errors.As(err, &pqErr) && pqErr.Code == "23505" { // unique_violation
+			return ErrUserExists
+		}
 		return fmt.Errorf("failed to insert staff: %w", err)
 	}
 	return nil
@@ -117,9 +122,12 @@ func (u *UserStorage) GetInactiveUsers() ([]models.User, error) {
 func (u *UserStorage) SetUserActive(login string) error {
 	query := `UPDATE staff SET status = 'Active' WHERE login = $1`
 
-	_, err := u.db.Exec(query, login)
+	res, err := u.db.Exec(query, login)
 	if err != nil {
 		return err
+	}
+	if n, err := res.RowsAffected(); err == nil && n == 0 {
+		return ErrUserNotFound
 	}
 
 	return nil

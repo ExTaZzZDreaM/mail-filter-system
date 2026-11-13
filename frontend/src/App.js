@@ -8,6 +8,8 @@ import BlockedMails from './components/BlockedMails';
 import UserValidation from './components/UserValidation';
 import './App.css';
 import axios from 'axios';
+import { ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
 
 
 function App() {
@@ -43,6 +45,7 @@ function App() {
     <Router>
       <div className="App">
         <Navbar token={token} isAdmin={isAdmin} onLogout={handleLogout} />
+        <ToastContainer position="top-right" autoClose={3000} />
         <div className="container">
           <Routes>
           <Route path="/register" element={!token ? <Register /> : <Navigate to="/mails" />} />

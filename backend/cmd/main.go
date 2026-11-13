@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/jmoiron/sqlx"
 	"log"
 	"mail_server/internal/handler/backendHandler"
@@ -30,7 +29,11 @@ const (
 func main() {
 	cfg := getCfg()
 
-	connStr := "user=postgres password=postgres dbname=mail sslmode=disable"
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		connStr = "host=localhost user=postgres password=postgres dbname=mail sslmode=disable"
+		log.Println("DATABASE_URL is not set, using local development defaults")
+	}
 	db, err := sqlx.Connect("postgres", connStr)
 	if err != nil {
 		panic(err)
@@ -52,7 +55,6 @@ func main() {
 		return origGetCertificate(info)
 	}
 	tlsCfg.ServerName = mailDomain
-	tlsCfg.InsecureSkipVerify = true
 
 	smtpSrv := mailHandler.NewSMTPServer(s.MailService, tlsCfg, cfg.SmtpAddr, domain, mailDomain)
 
@@ -63,7 +65,7 @@ func main() {
 		}
 	}()
 
-	backendSrv := backendHandler.NewBackendHandler(s, cfg.HttpAddr, tlsCfg)
+	backendSrv := backendHandler.NewBackendHandler(s, cfg.HttpAddr, tlsCfg, allowedOrigin())
 
 	go func() {
 		log.Printf("HTTP server starting on %s", cfg.HttpAddr)
@@ -103,9 +105,15 @@ func getCfg() config {
 		log.Fatal(err)
 	}
 
-	fmt.Println(cfg)
-
 	return cfg
+}
+
+// allowedOrigin returns the origin allowed to call the HTTP API from a browser.
+func allowedOrigin() string {
+	if o := os.Getenv("CORS_ORIGIN"); o != "" {
+		return o
+	}
+	return "http://localhost:3000"
 }
 
 type config struct {

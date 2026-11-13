@@ -1,0 +1,14 @@
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Secrets and local config
+.env
+*.env.local
+backend/certs/
+
+# Build output
+backend/mail_server
+backend/*.exe
+backend/check/*.exe
